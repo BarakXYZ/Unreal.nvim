@@ -1,0 +1,160 @@
+#!/usr/bin/env lua
+
+--[[
+Unreal.nvim CLI Tool
+Standalone tool for generating Unreal Engine compile commands and build integration.
+Can be used independently or called by the Neovim plugin.
+
+Usage:
+  unreal-codegen gen --project <path> --engine <path> [--target <index>] [--with-engine]
+  unreal-codegen build --project <path> --target <index>
+  unreal-codegen run --project <path> --target <index>
+  unreal-codegen --version
+  unreal-codegen --help
+]]
+
+local VERSION = "1.0.0-alpha"
+
+-- Add lib directory to package path
+local script_path = debug.getinfo(1, "S").source:sub(2)
+local script_dir = script_path:match("(.*/)")
+package.path = script_dir .. "../lib/?.lua;" .. script_dir .. "../lib/?/init.lua;" .. package.path
+
+-- Load core modules
+local core = require("unreal.core")
+local json = require("unreal.json")
+
+-- CLI Argument Parser
+local function parse_args(args)
+    local parsed = {
+        command = nil,
+        project = nil,
+        engine = nil,
+        target = nil,
+        with_engine = false,
+        verbose = false,
+    }
+
+    local i = 1
+    while i <= #args do
+        local arg = args[i]
+
+        if arg == "--help" or arg == "-h" then
+            return { command = "help" }
+        elseif arg == "--version" or arg == "-v" then
+            return { command = "version" }
+        elseif arg == "--verbose" then
+            parsed.verbose = true
+        elseif arg == "--project" or arg == "-p" then
+            i = i + 1
+            parsed.project = args[i]
+        elseif arg == "--engine" or arg == "-e" then
+            i = i + 1
+            parsed.engine = args[i]
+        elseif arg == "--target" or arg == "-t" then
+            i = i + 1
+            parsed.target = tonumber(args[i])
+        elseif arg == "--with-engine" then
+            parsed.with_engine = true
+        elseif not parsed.command then
+            parsed.command = arg
+        end
+
+        i = i + 1
+    end
+
+    return parsed
+end
+
+-- Print help
+local function print_help()
+    print([[
+Unreal.nvim CLI Tool v]] .. VERSION .. [[
+
+USAGE:
+    unreal-codegen <COMMAND> [OPTIONS]
+
+COMMANDS:
+    gen         Generate compile_commands.json for LSP support
+    build       Build the Unreal project
+    run         Run the Unreal project
+    version     Print version information
+    help        Print this help message
+
+OPTIONS:
+    -p, --project <PATH>     Path to .uproject file or project directory
+    -e, --engine <PATH>      Path to Unreal Engine installation
+    -t, --target <INDEX>     Target configuration index (from UnrealNvim.json)
+    --with-engine            Include engine source files in generation
+    --verbose                Enable verbose output
+
+EXAMPLES:
+    # Generate compile commands for project only
+    unreal-codegen gen -p ~/MyProject -e ~/UE_5.7
+
+    # Generate with engine sources
+    unreal-codegen gen -p ~/MyProject -e ~/UE_5.7 --with-engine
+
+    # Build project with specific target
+    unreal-codegen build -p ~/MyProject -t 0
+
+For more information, visit: https://github.com/zadirion/Unreal.nvim
+]])
+end
+
+-- Print version
+local function print_version()
+    print("unreal-codegen " .. VERSION)
+    print("Platform: " .. core.get_platform())
+end
+
+-- Main execution
+local function main(args)
+    local opts = parse_args(args)
+
+    -- Handle help/version
+    if opts.command == "help" or not opts.command then
+        print_help()
+        return 0
+    end
+
+    if opts.command == "version" then
+        print_version()
+        return 0
+    end
+
+    -- Execute command
+    local success, result = pcall(function()
+        if opts.command == "gen" then
+            if not opts.project then
+                error("--project is required")
+            end
+            return core.generate_commands(opts)
+        elseif opts.command == "build" then
+            if not opts.project then
+                error("--project is required")
+            end
+            return core.build_project(opts)
+        elseif opts.command == "run" then
+            if not opts.project then
+                error("--project is required")
+            end
+            return core.run_project(opts)
+        else
+            error("Unknown command: " .. opts.command)
+        end
+    end)
+
+    if not success then
+        io.stderr:write("Error: " .. tostring(result) .. "\n")
+        io.stderr:write("Use --help for usage information\n")
+        return 1
+    end
+
+    -- Output result as JSON
+    print(json.encode(result))
+    return 0
+end
+
+-- Run CLI
+os.exit(main(arg))
