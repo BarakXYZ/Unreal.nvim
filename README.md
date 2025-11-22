@@ -1,12 +1,25 @@
 # Unreal.nvim
-Unreal Engine support for Neovim
+Unreal Engine support for Neovim with cross-platform support (Windows, MacOS, Linux)
 ![image](https://raw.githubusercontent.com/zadirion/Unreal.nvim/main/image.png)
 
 **Requirements**
 
-- make sure you install  the clangd support component through Visual Studio Setup, and make sure the installed clang++.exe is in your system path env variable. Needs to be added manually to path, the installer does not do that
-- has been tested with Unreal Engine 5.1 and 5.2. Unsure what, if any other versions work
-- (optional) If you don't already have your own configuration, I recommend you use my neovim configuration specialized for development in Unreal Engine https://github.com/zadirion/UnrealHero.nvim
+**Windows:**
+- Install the clangd support component through Visual Studio Setup
+- Ensure clang++.exe is in your system PATH environment variable (needs to be added manually)
+
+**MacOS:**
+- Install Xcode Command Line Tools: `xcode-select --install`
+- clang/clang++ will be available automatically
+
+**Linux:**
+- Install clang: `sudo apt install clang` (Ubuntu/Debian) or equivalent for your distro
+
+**All Platforms:**
+- Tested with Unreal Engine 4.27, 5.1, 5.2, and 5.3
+- Neovim >= 0.7.0
+- (optional) vim-dispatch plugin for async build execution
+- (optional) If you don't already have your own configuration, I recommend you use neovim configuration specialized for development in Unreal Engine https://github.com/zadirion/UnrealHero.nvim
 
 **Installation**
 
@@ -49,10 +62,38 @@ This should cause your LSP to start recognizing the Unreal types, including the 
 - `:UnrealCD` sets the current directory to the root folder of the unreal project (the one with the .uproject in it). I personally use this so Telescope only searches in the project directory, making it faster, especially for live_grep
 
 **Known Limitations**
-- you can't run with a debugger attached at the moment. I plan on adding support for starting the project with WinDbg attached. Currently if you want a debugger, you'll still have to run the project from Visual Studio and debug it there.
-- the project is primarily developed for Windows. Unfortunately I do not have the time or motivation to maintain it for Linux, although I wish it worked there too. But since game development is primarily done on Windows in general, this is the primary target for the plugin. If any volunteer maintainers for Linux step forward, I'd be happy to collab with you
-- you can only abort a build using `:AbortDispatch` and it will only work for the actual unreal build step, it won't work for the RSP generation build step
+- Debugger support not yet implemented. On Windows, use Visual Studio for debugging. On MacOS, use Xcode or lldb. On Linux, use gdb/lldb.
+- You can only abort a build using `:AbortDispatch` and it will only work for the actual unreal build step, it won't work for the RSP generation build step
+
+**Platform-Specific Notes**
+
+**MacOS:**
+- Unreal Editor is launched from `.app` bundles automatically
+- Build scripts use `.sh` files from `Engine/Build/BatchFiles/Mac/`
+- Default platform in config is set to `Mac` automatically
+
+**Linux:**
+- Build scripts use `.sh` files from `Engine/Build/BatchFiles/Linux/`
+- Default platform in config is set to `Linux` automatically
+- Make sure build scripts are executable: `chmod +x Engine/Build/BatchFiles/Linux/*.sh`
+
+**Windows:**
+- Uses MSVC-style compiler flags (`/FI`, `/I`, etc.) natively
+- Default platform in config is set to `Win64` automatically
 
 **Troubleshooting**
-- if you notice that some of the symbols in your project are not recognize/found, it is possible clangd's index cache is broken somehow. You can find clang's cache in the .cache directory that will sit next to your .uproject. It is full of .idx files, each corresponding to a source code file in your project. Close nvim, delete the .cache directory, reopen vim, navigate to one of your project's files. It should trigger clangd to rebuild the index.
--Unreal.Nvim's log can be found in the nvim-data folder, but you need to enable logging first in nvim by setting `vim.g.unrealnvim_debug = true` clangd's LSP log can be found here: %localappdata%/nvim-data\lsp.log  If you are unsure whether clangd 'sees' some of your code, looking at this log helps
+
+**General:**
+- If symbols are not recognized/found, clangd's index cache may be broken. Find the `.cache` directory next to your `.uproject`, close Neovim, delete `.cache`, reopen and navigate to a project file to trigger reindexing.
+- Enable logging with `vim.g.unrealnvim_debug = true`. Unreal.Nvim's log is in nvim-data folder.
+- clangd's LSP log location:
+  - Windows: `%localappdata%/nvim-data/lsp.log`
+  - MacOS/Linux: `~/.local/share/nvim/lsp.log`
+
+**MacOS-Specific:**
+- If UnrealBuildTool fails, ensure Xcode Command Line Tools are installed: `xcode-select --install`
+- If editor won't launch, verify the `.app` bundle exists in `Engine/Binaries/Mac/` or `ProjectName/Binaries/Mac/`
+
+**Linux-Specific:**
+- If build scripts fail with permission errors, make them executable: `chmod +x Engine/Build/BatchFiles/Linux/*.sh`
+- Ensure clang is installed and in PATH: `which clang++`

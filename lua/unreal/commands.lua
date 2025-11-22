@@ -15,6 +15,20 @@ local TaskState =
     completed = "completed"
 }
 
+-- Platform detection
+local path_separator = package.config:sub(1,1)
+local is_windows = path_separator == '\\'
+local is_macos = vim.fn.has('mac') == 1 or vim.fn.has('macunix') == 1
+local is_linux = vim.fn.has('unix') == 1 and not is_macos
+
+-- Platform-specific constants
+local platform_name = "Win64"
+if is_macos then
+    platform_name = "Mac"
+elseif is_linux then
+    platform_name = "Linux"
+end
+
 -- fix false diagnostic about vim
 if not vim then
     vim = {}
@@ -89,6 +103,83 @@ local function MakeUnixPath(win_path)
     unix_path = unix_path:gsub("//+", "/")
 
     return unix_path
+end
+
+-- Cross-platform path normalization
+local function NormalizePath(path)
+    if not path then
+        logError("NormalizePath received a nil argument")
+        return nil
+    end
+
+    -- Always use forward slashes internally for consistency
+    local normalized = path:gsub("\\", "/")
+
+    -- Remove duplicate slashes
+    normalized = normalized:gsub("//+", "/")
+
+    return normalized
+end
+
+-- Get platform-appropriate path separator for shell commands
+local function GetPathSeparator()
+    return path_separator
+end
+
+-- Get platform-specific UnrealBuildTool path
+local function GetUnrealBuildToolPath(engineDir, engineVer)
+    local ubtName = is_windows and "UnrealBuildTool.exe" or "UnrealBuildTool"
+    local ubtPath
+
+    if engineVer and engineVer < 5.0 then
+        ubtPath = engineDir .. "/Engine/Binaries/DotNET/" .. ubtName
+    else
+        ubtPath = engineDir .. "/Engine/Binaries/DotNET/UnrealBuildTool/" .. ubtName
+    end
+
+    return "\"" .. ubtPath .. "\""
+end
+
+-- Get platform-specific build script path
+local function GetBuildScriptPath(engineDir)
+    local scriptPath
+
+    if is_windows then
+        scriptPath = engineDir .. "/Engine/Build/BatchFiles/Build.bat"
+    elseif is_macos then
+        scriptPath = engineDir .. "/Engine/Build/BatchFiles/Mac/Build.sh"
+    else -- Linux
+        scriptPath = engineDir .. "/Engine/Build/BatchFiles/Linux/Build.sh"
+    end
+
+    return "\"" .. scriptPath .. "\""
+end
+
+-- Get platform-specific editor executable path
+local function GetEditorPath(engineDir, projectDir, projectName, editorSuffix)
+    local editorPath
+
+    if is_windows then
+        if projectDir and projectName then
+            editorPath = projectDir .. "/Binaries/Win64/" .. projectName .. editorSuffix .. ".exe"
+        else
+            editorPath = engineDir .. "/Engine/Binaries/Win64/UnrealEditor" .. editorSuffix .. ".exe"
+        end
+    elseif is_macos then
+        if projectDir and projectName then
+            editorPath = projectDir .. "/Binaries/Mac/" .. projectName .. editorSuffix .. ".app/Contents/MacOS/" .. projectName .. editorSuffix
+        else
+            editorPath = engineDir .. "/Engine/Binaries/Mac/UnrealEditor" .. editorSuffix .. ".app/Contents/MacOS/UnrealEditor" .. editorSuffix
+        end
+    else -- Linux
+        if projectDir and projectName then
+            editorPath = projectDir .. "/Binaries/Linux/" .. projectName .. editorSuffix
+        else
+            editorPath = engineDir .. "/Engine/Binaries/Linux/UnrealEditor" .. editorSuffix
+        end
+    end
+
+    return "\"" .. editorPath .. "\""
 end
 
 local function FuncBind(func, data)
@@ -192,42 +283,42 @@ function Commands._CreateConfigFile(configFilePath, projectName)
             "Configuration" : "DebugGame",
             "withEditor" : true,
             "UbtExtraFlags" : "",
-            "PlatformName" : "Win64"
+            "PlatformName" : "]] .. platform_name .. [["
         },
         {
             "TargetName" : "]] .. projectName .. [[",
             "Configuration" : "DebugGame",
             "withEditor" : false,
             "UbtExtraFlags" : "",
-            "PlatformName" : "Win64"
+            "PlatformName" : "]] .. platform_name .. [["
         },
         {
             "TargetName" : "]] .. projectName .. [[",
             "Configuration" : "Development",
             "withEditor" : true,
             "UbtExtraFlags" : "",
-            "PlatformName" : "Win64"
+            "PlatformName" : "]] .. platform_name .. [["
         },
         {
             "TargetName" : "]] .. projectName .. [[",
             "Configuration" : "Development",
             "withEditor" : false,
             "UbtExtraFlags" : "",
-            "PlatformName" : "Win64"
+            "PlatformName" : "]] .. platform_name .. [["
         },
         {
             "TargetName" : "]] .. projectName .. [[",
             "Configuration" : "Shipping",
             "withEditor" : true,
             "UbtExtraFlags" : "",
-            "PlatformName" : "Win64"
+            "PlatformName" : "]] .. platform_name .. [["
         },
         {
             "TargetName" : "]] .. projectName .. [[",
             "Configuration" : "Shipping",
             "withEditor" : false,
             "UbtExtraFlags" : "",
-            "PlatformName" : "Win64"
+            "PlatformName" : "]] .. platform_name .. [["
         }
     ]
 }
@@ -344,38 +435,35 @@ function ExtractRSP(rsppath)
     end
 
     local lines = {}
-    -- local isFirstLine = true
     local lineNb = 0;
     for line in io.lines(rsppath) do
         local discardLine = false
 
-        -- ignored lines
-        -- if line:find("^/FI") then discardLine = true end
-        -- if line:find("^/I") then discardLine = true end
-        -- if line:find("^-W") then discardLine = true end
-
-        -- line = line:gsub("^/FI", "-include ")
-        -- line = line:gsub("^(/I )(.*)", "-I \"%2\"")
-
-        -- if isFirstLine then
-        --     discardLine = true
-        -- end
+        -- On Unix systems, convert MSVC flags to clang format
+        if not is_windows then
+            line = line:gsub("^/FI", "-include ")
+            line = line:gsub("^/I ", "-I ")
+            line = line:gsub("^/D", "-D")
+            line = line:gsub("^/W", "-W")
+        end
 
         if not discardLine then
             lines[lineNb] = line .. "\n"
             lineNb = lineNb + 1
         end
-
-        -- isFirstLine = false
     end
 
+    -- Add extra includes with platform-specific syntax
     for _, incl in ipairs(extraIncludes) do
-        lines[lineNb] ="\n" .. "/FI\"" .. CurrentGenData.config.EngineDir .. "/" .. incl .. "\""
+        if is_windows then
+            lines[lineNb] = "\n/FI\"" .. CurrentGenData.config.EngineDir .. "/" .. incl .. "\""
+        else
+            lines[lineNb] = "\n-include \"" .. CurrentGenData.config.EngineDir .. "/" .. incl .. "\""
+        end
         lineNb = lineNb + 1
     end
-    -- lines[lineNb] =  "\n" .. extraFlags
+
     lineNb = lineNb + 1
-    --table.insert(lines, "\n\"" .. currentFilename .. "\"")
     return table.concat(lines)
 end
 
@@ -499,7 +587,9 @@ function Stage_UbtGenCmd()
                 AppendToQF(qflistentry)
             end
 
-            local startCmd, endCmd = line:find(":.+.exe\\\"")
+            -- Extract compiler command (with or without .exe extension)
+            local compiler_pattern = is_windows and ":.+%.exe\\\"" or ":.+clang[^\\\"]*\\\""
+            local startCmd, endCmd = line:find(compiler_pattern)
             local command = line:sub(startCmd + 1, endCmd)
 
             -- content = content .. "matched:\n"
@@ -508,7 +598,9 @@ function Stage_UbtGenCmd()
                 local _,endpos = line:find("\\\"", j)
                 local rsppath = line:sub(j+1, endpos-2)
                 if rsppath and file_exists(rsppath) then
-                    local newrsppath = rsppath .. ".cl.rsp"
+                    -- Use platform-specific rsp extension
+                    local rsp_extension = is_windows and ".cl.rsp" or ".rsp"
+                    local newrsppath = rsppath .. rsp_extension
 
                     -- rewrite rsp contents
                     if not shouldSkipFile then
@@ -525,7 +617,8 @@ function Stage_UbtGenCmd()
                 -- it's not an rsp command, the flags will be clang compatible
                 -- for some reason they're only incompatible flags inside
                 -- rsps. keep line as is
-                local _, endArgsPos = line:find("%.exe\\\"")
+                local exe_pattern = is_windows and "%.exe\\\"" or "clang[^\\\"]*\\\""
+                local _, endArgsPos = line:find(exe_pattern)
                 local args = line:sub(endArgsPos+1, -1)
                 local rspfilename = currentFilename:gsub("\\\\","/")
                 rspfilename = rspfilename:gsub(":","")
@@ -657,7 +750,7 @@ end
 function Commands.GetCurrentFilePath()
     local current_file_path = vim.api.nvim_buf_get_name(0)
     if current_file_path == nil or current_file_path == "" then
-        current_file_path = vim.fn.getcwd() .. "\\"
+        current_file_path = vim.fn.getcwd() .. path_separator
     end
     return current_file_path
 end
@@ -689,12 +782,8 @@ function InitializeCurrentGenData()
         return false
     end
 
-    if CurrentGenData.config.EngineVer and CurrentGenData.config.EngineVer < 5.0 then
-        CurrentGenData.ubtPath = "\"" .. CurrentGenData.config.EngineDir .."/Engine/Binaries/DotNET/UnrealBuildTool.exe\""
-    else
-        CurrentGenData.ubtPath = "\"" .. CurrentGenData.config.EngineDir .."/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe\""
-    end
-    CurrentGenData.ueBuildBat = "\"" .. CurrentGenData.config.EngineDir .."/Engine/Build/BatchFiles/Build.bat\""
+    CurrentGenData.ubtPath = GetUnrealBuildToolPath(CurrentGenData.config.EngineDir, CurrentGenData.config.EngineVer)
+    CurrentGenData.ueBuildBat = GetBuildScriptPath(CurrentGenData.config.EngineDir)
     CurrentGenData.projectPath = "\"" .. CurrentGenData.prjDir .. "/" ..
         CurrentGenData.prjName .. ".uproject\""
 
@@ -800,8 +889,12 @@ function Commands.run(opts)
             CurrentGenData.target.Configuration
         end
 
-        local executablePath = "\"".. CurrentGenData.config.EngineDir .. "/Engine/Binaries/" ..
-        CurrentGenData.target.PlatformName .. "/UnrealEditor" ..  editorSuffix .. ".exe\""
+        local executablePath = GetEditorPath(
+            CurrentGenData.config.EngineDir,
+            nil,  -- Use engine editor, not project-specific
+            nil,
+            editorSuffix
+        )
 
         cmd = executablePath .. " " ..
         CurrentGenData.projectPath .. " -skipcompile"
@@ -812,8 +905,12 @@ function Commands.run(opts)
             CurrentGenData.target.Configuration
         end
 
-        local executablePath = "\"".. CurrentGenData.prjDir .. "/Binaries/" ..
-        CurrentGenData.target.PlatformName .. "/" .. CurrentGenData.prjName ..  exeSuffix .. ".exe\""
+        local executablePath = GetEditorPath(
+            CurrentGenData.config.EngineDir,
+            CurrentGenData.prjDir,
+            CurrentGenData.prjName,
+            exeSuffix
+        )
 
         cmd = executablePath
     end
