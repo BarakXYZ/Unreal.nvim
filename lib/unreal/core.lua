@@ -90,6 +90,87 @@ function M.find_uproject(start_dir)
     return nil
 end
 
+-- Parse .uproject file and extract engine association
+function M.parse_uproject(uproject_path)
+    if not M.file_exists(uproject_path) then
+        return nil, "Project file not found: " .. uproject_path
+    end
+
+    local file = io.open(uproject_path, "r")
+    if not file then
+        return nil, "Cannot open project file"
+    end
+
+    local content = file:read("*a")
+    file:close()
+
+    local json = require("unreal.json")
+    local success, uproject = pcall(json.decode, content)
+    if not success then
+        return nil, "Invalid JSON in project file"
+    end
+
+    return uproject
+end
+
+-- Get default engine path based on OS and version
+function M.get_default_engine_path(engine_version)
+    if not engine_version then
+        return nil
+    end
+
+    -- Extract major.minor version (e.g., "5.7" from "5.7" or "5.3.2")
+    local major, minor = engine_version:match("^(%d+)%.(%d+)")
+    if not major or not minor then
+        return nil, "Invalid engine version format: " .. engine_version
+    end
+
+    local version_str = major .. "." .. minor
+    local engine_path
+
+    if M.is_windows then
+        engine_path = "C:/Program Files/Epic Games/UE_" .. version_str
+    elseif M.is_macos then
+        engine_path = "/Users/Shared/Epic Games/UE_" .. version_str
+    else -- Linux
+        -- Linux typically uses custom builds, try common locations
+        local home = os.getenv("HOME") or "~"
+        engine_path = home .. "/UnrealEngine-" .. version_str
+    end
+
+    return engine_path
+end
+
+-- Auto-detect engine path and version from .uproject
+function M.detect_engine_info(uproject_path)
+    local uproject, err = M.parse_uproject(uproject_path)
+    if not uproject then
+        return nil, nil, err
+    end
+
+    local engine_association = uproject.EngineAssociation
+    if not engine_association then
+        return nil, nil, "No EngineAssociation found in project file"
+    end
+
+    -- Check if it's a version number (e.g., "5.7") or a GUID/custom path
+    local is_version = engine_association:match("^%d+%.%d+")
+    if not is_version then
+        return nil, nil, "EngineAssociation is a custom engine (GUID or path). Please specify --engine manually."
+    end
+
+    local engine_path = M.get_default_engine_path(engine_association)
+    if not engine_path then
+        return nil, nil, "Could not determine default engine path"
+    end
+
+    -- Extract numeric version (keep full version like 5.7)
+    local major, minor = engine_association:match("^(%d+)%.(%d+)")
+    local engine_ver = tonumber(major .. "." .. minor)
+
+    return engine_path, engine_ver, nil
+end
+
 -- Load config file
 function M.load_config(project_dir)
     local config_path = project_dir .. "/UnrealNvim.json"
@@ -400,11 +481,22 @@ function M.generate_commands(opts)
         return result
     end
 
-    -- Use opts.engine if provided, otherwise use config
+    -- Use opts.engine if provided, otherwise use config, otherwise auto-detect
     local engine_dir = opts.engine or config.EngineDir
     if not engine_dir or engine_dir == "" then
-        result.message = "Engine directory not specified"
-        return result
+        -- Try auto-detection as last resort
+        local detected_path, detected_ver, detect_err = M.detect_engine_info(uproject_path)
+        if detected_path then
+            engine_dir = detected_path
+            result.auto_detected = true
+            result.detected_engine = detected_path
+            if opts.verbose then
+                print("Auto-detected engine: " .. detected_path)
+            end
+        else
+            result.message = "Engine directory not specified in config and auto-detection failed: " .. (detect_err or "unknown error")
+            return result
+        end
     end
 
     -- Get target index
@@ -506,11 +598,6 @@ function M.init_project(opts)
         return result
     end
 
-    if not opts.engine then
-        result.message = "Engine path is required (use --engine)"
-        return result
-    end
-
     -- Find .uproject file
     local uproject_path = opts.project
     if not uproject_path:match("%.uproject$") then
@@ -532,11 +619,28 @@ function M.init_project(opts)
         return result
     end
 
-    -- Detect engine version from path (rough estimate)
+    -- Auto-detect engine path and version if not provided
+    local engine_path = opts.engine
     local engine_ver = 5.0
-    local ver_match = opts.engine:match("UE[_%-]?(%d+)%.(%d+)")
-    if ver_match then
-        engine_ver = tonumber(ver_match)
+
+    if not engine_path then
+        local detected_path, detected_ver, err = M.detect_engine_info(uproject_path)
+        if detected_path then
+            engine_path = detected_path
+            engine_ver = detected_ver
+            result.auto_detected = true
+            result.detected_engine = engine_path
+            result.detected_version = engine_ver
+        else
+            result.message = "Could not auto-detect engine: " .. (err or "unknown error") .. ". Please specify --engine manually."
+            return result
+        end
+    else
+        -- Detect engine version from path if provided
+        local ver_match = engine_path:match("UE[_%-]?(%d+)%.(%d+)")
+        if ver_match then
+            engine_ver = tonumber(ver_match)
+        end
     end
 
     -- Create config content
@@ -544,7 +648,7 @@ function M.init_project(opts)
     local config = {
         version = "0.0.2",
         _comment = "Generated by unreal-codegen init",
-        EngineDir = opts.engine,
+        EngineDir = engine_path,
         EngineVer = engine_ver,
         DefaultTarget = 1,
         Targets = {

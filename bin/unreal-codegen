@@ -83,15 +83,18 @@ COMMANDS:
     help        Print this help message
 
 OPTIONS:
-    -p, --project <PATH>     Path to .uproject file or project directory
-    -e, --engine <PATH>      Path to Unreal Engine installation
+    -p, --project <PATH>     Path to .uproject file or project directory (required)
+    -e, --engine <PATH>      Path to Unreal Engine installation (optional, auto-detected from .uproject)
     -t, --target <INDEX>     Target configuration index (from UnrealNvim.json)
     --with-engine            Include engine source files in generation
     --verbose                Enable verbose output
 
 EXAMPLES:
-    # Initialize a new project
-    unreal-codegen init -p ~/MyProject -e ~/UE_5.7
+    # Initialize a new project (auto-detects engine from .uproject)
+    unreal-codegen init -p ~/MyProject
+
+    # Initialize with custom engine path
+    unreal-codegen init -p ~/MyProject -e ~/CustomUE_5.7
 
     # Generate compile commands for project only
     unreal-codegen gen -p ~/MyProject
@@ -133,9 +136,7 @@ local function main(args)
             if not opts.project then
                 error("--project is required")
             end
-            if not opts.engine then
-                error("--engine is required")
-            end
+            -- --engine is now optional, will auto-detect from .uproject
             return core.init_project(opts)
         elseif opts.command == "gen" then
             if not opts.project then
