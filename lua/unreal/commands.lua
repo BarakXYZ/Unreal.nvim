@@ -182,6 +182,50 @@ local function GetEditorPath(engineDir, projectDir, projectName, editorSuffix)
     return "\"" .. editorPath .. "\""
 end
 
+-- Get path to unreal-codegen CLI tool
+local function GetCodegenCLIPath()
+    -- The CLI is in bin/unreal-codegen relative to the plugin root
+    local plugin_root = vim.fn.fnamemodify(debug.getinfo(1).source:sub(2), ":h:h:h")
+    local cli_path = plugin_root .. "/bin/unreal-codegen"
+    return cli_path
+end
+
+-- Call the CLI tool and return parsed JSON result
+local function CallCLI(command, args)
+    local cli_path = GetCodegenCLIPath()
+    local cmd = cli_path .. " " .. command
+
+    -- Add arguments
+    for key, value in pairs(args or {}) do
+        if type(value) == "boolean" then
+            if value then
+                cmd = cmd .. " --" .. key
+            end
+        else
+            cmd = cmd .. " --" .. key .. " \"" .. tostring(value) .. "\""
+        end
+    end
+
+    PrintAndLogMessage("Calling CLI: " .. cmd)
+
+    -- Execute and capture output
+    local handle = io.popen(cmd .. " 2>&1")
+    if not handle then
+        return nil, "Failed to execute CLI command"
+    end
+
+    local output = handle:read("*a")
+    handle:close()
+
+    -- Parse JSON output
+    local success, result = pcall(vim.fn.json_decode, output)
+    if not success then
+        return nil, "Failed to parse CLI output: " .. output
+    end
+
+    return result
+end
+
 local function FuncBind(func, data)
     return function()
         func(data)
@@ -419,72 +463,8 @@ local function file_exists(name)
    return false
 end
 
-function ExtractRSP(rsppath)
-    local extraIncludes = {
-        "Engine/Source/Runtime/CoreUObject/Public/UObject/ObjectMacros.h",
-        "Engine/Source/Runtime/Core/Public/Misc/EnumRange.h",
-        "Engine/Source/Runtime/Engine/Public/EngineMinimal.h",
-    }
-
-    rsppath = rsppath:gsub("\\\\","/")
-    PrintAndLogMessage(rsppath)
-
-    if not file_exists(rsppath) then
-       PrintAndLogMessage("rsppath doesn't exists: " .. rsppath)
-       return
-    end
-
-    local lines = {}
-    local lineNb = 0;
-    for line in io.lines(rsppath) do
-        local discardLine = false
-
-        -- On Unix systems, convert MSVC flags to clang format
-        if not is_windows then
-            line = line:gsub("^/FI", "-include ")
-            line = line:gsub("^/I ", "-I ")
-            line = line:gsub("^/D", "-D")
-            line = line:gsub("^/W", "-W")
-        end
-
-        if not discardLine then
-            lines[lineNb] = line .. "\n"
-            lineNb = lineNb + 1
-        end
-    end
-
-    -- Add extra includes with platform-specific syntax
-    for _, incl in ipairs(extraIncludes) do
-        if is_windows then
-            lines[lineNb] = "\n/FI\"" .. CurrentGenData.config.EngineDir .. "/" .. incl .. "\""
-        else
-            lines[lineNb] = "\n-include \"" .. CurrentGenData.config.EngineDir .. "/" .. incl .. "\""
-        end
-        lineNb = lineNb + 1
-    end
-
-    lineNb = lineNb + 1
-    return table.concat(lines)
-end
-
-function CreateCommandLine()
-end
-
-function EscapePath(path)
-    -- path = path:gsub("\\", "\\\\")
-    path = path:gsub("\\\\", "/")
-    path = path:gsub("\\", "/")
-    path = path:gsub("\"", "\\\"")
-    return path
-end
-function EnsureDirPath(path)
-    PrintAndLogMessage("Ensuring path exists: "..path)
-    -- os.execute("mkdir -p " .. path)
-    local handle = io.popen("cmd.exe /c mkdir \"" .. path.. "\"")
-    handle:flush()
-    local result = handle:read("*a")
-    handle:close()
-end
+-- Note: ExtractRSP, EscapePath, EnsureDirPath functions removed
+-- These are now handled by the CLI tool (unreal-codegen)
 
 local function IsEngineFile(path, start)
     local unixPath = MakeUnixPath(path)
@@ -542,144 +522,48 @@ end
 function Stage_UbtGenCmd()
     coroutine.yield()
     Commands.BeginTask("gencmd")
-    PrintAndLogMessage("callback called!")
-    local outputJsonPath = CurrentGenData.config.EngineDir .. "/compile_commands.json"
+    PrintAndLogMessage("Processing compile_commands.json with CLI...")
 
-    local rspdir = CurrentGenData.prjDir .. "/Intermediate/clangRsp/" ..
-    CurrentGenData.target.PlatformName .. "/"..
-    CurrentGenData.target.Configuration .. "/"
+    -- Call the CLI to process compile_commands.json
+    local cli_args = {
+        project = CurrentGenData.prjDir,
+        engine = CurrentGenData.config.EngineDir,
+        target = CurrentGenData.config.DefaultTarget or 1,
+    }
 
-    -- all these replaces are slow, could be rewritten as a parser
-    EnsureDirPath(rspdir)
-
-    -- replace bad compiler
-    local file_path = outputJsonPath
-
-    local contentLines = {}
-    PrintAndLogMessage("processing compile_commands.json and writing response files")
-    PrintAndLogMessage(file_path)
-
-    local skipEngineFiles = true
     if CurrentGenData.WithEngine then
-        skipEngineFiles = false
+        cli_args["with-engine"] = true
     end
 
-    local qflistentry = {text = "Preparing files for parsing." }
-    if not skipEngineFiles then
+    if vim.g.unrealnvim_debug then
+        cli_args.verbose = true
+    end
+
+    local qflistentry = {text = "Processing compile_commands.json..." }
+    if CurrentGenData.WithEngine then
         qflistentry.text = qflistentry.text .. " Engine source files included, process will take longer"
     end
     AppendToQF(qflistentry)
 
-    local currentFilename = ""
-    for line in io.lines(file_path) do
-        local i,j = line:find("\"command\":")
-        if i then
-            coroutine.yield()
+    -- Call CLI (this blocks but we're in a coroutine so it's okay)
+    local result, err = CallCLI("gen", cli_args)
 
-            -- show progress
-            logWithVerbosity(kLogLevel_Verbose, "Preparing for LSP symbol parsing: " .. currentFilename)
-            local isEngineFile = IsEngineFile(currentFilename, CurrentGenData.config.EngineDir)
-            local shouldSkipFile = isEngineFile and skipEngineFiles
-
-            local qflistentry = {filename = "", lnum = 0, col = 0,
-                text =  currentFilename}
-            if not shouldSkipFile then
-                AppendToQF(qflistentry)
-            end
-
-            -- Extract compiler command (with or without .exe extension)
-            -- On Unix, stop before the @ symbol to avoid including arguments
-            local compiler_pattern = is_windows and ":.+%.exe\\\"" or ":.+clang%+%+\\\""
-            local startCmd, endCmd = line:find(compiler_pattern)
-            local command = line:sub(startCmd + 1, endCmd)
-
-            -- content = content .. "matched:\n"
-            i,j = line:find("%@\\\"")
-            if i then
-                local _,endpos = line:find("\\\"", j)
-                local rsppath = line:sub(j+1, endpos-2)
-                if rsppath and file_exists(rsppath) then
-                    -- Use platform-specific rsp extension
-                    -- On Unix, rsp files already have .rsp extension, on Windows add .cl.rsp
-                    local newrsppath
-                    if is_windows then
-                        newrsppath = rsppath .. ".cl.rsp"
-                    else
-                        -- On Unix, check if already ends with .rsp
-                        if rsppath:match("%.rsp$") then
-                            newrsppath = rsppath .. ".clang.rsp"
-                        else
-                            newrsppath = rsppath .. ".rsp"
-                        end
-                    end
-
-                    -- rewrite rsp contents
-                    if not shouldSkipFile then
-                        local rspfile = io.open(newrsppath, "w")
-                        local rspcontent = ExtractRSP(rsppath)
-                        rspfile:write(rspcontent)
-                        rspfile:close()
-                    end
-                    coroutine.yield()
-
-                    table.insert(contentLines, string.format("\t\t\"command\": %s @\\\"" ..newrsppath .."\\\"\",\n", command))
-                end
-            else
-                -- it's not an rsp command, the flags will be clang compatible
-                -- for some reason they're only incompatible flags inside
-                -- rsps. keep line as is
-                local exe_pattern = is_windows and "%.exe\\\"" or "clang%+%+\\\""
-                local _, endArgsPos = line:find(exe_pattern)
-                local args = line:sub(endArgsPos+1, -1)
-                local rspfilename = currentFilename:gsub("\\\\","/")
-                rspfilename = rspfilename:gsub(":","")
-                rspfilename = rspfilename:gsub("\"","")
-                rspfilename = rspfilename:gsub(",","")
-                rspfilename = rspfilename:gsub("\\","/")
-                rspfilename = rspfilename:gsub("/","_")
-                rspfilename = rspfilename .. ".rsp"
-                local rspfilepath = rspdir .. rspfilename
-
-                if not shouldSkipFile then
-                    PrintAndLogMessage("Writing rsp: " .. rspfilepath)
-
-                    args = args:gsub("-D\\\"", "-D\"")
-                    args = args:gsub("-I\\\"", "-I\"")
-                    args = args:gsub("\\\"\\\"\\\"", "__3Q_PLACEHOLDER__")
-                    args = args:gsub("\\\"\\\"", "\\\"\"")
-                    args = args:gsub("\\\" ", "\" ")
-                    args = args:gsub("\\\\", "/")
-                    args = args:gsub(",%s*$", "") -- remove trailing comma and spaces
-                    args = args:gsub("\" ", "\"\n") -- one arg per line
-
-                    args = args:gsub("__3Q_PLACEHOLDER__", "\\\"\\\"\"")
-
-                    args = args:gsub("\n[^\n]*$", "")
-                    local rspfile = io.open(rspfilepath, "w")
-                    rspfile:write(args)
-                    rspfile:close()
-                end
-                coroutine.yield()
-
-                table.insert(contentLines, string.format("\t\t\"command\": %s @\\\"" .. EscapePath(rspfilepath) .."\\\""
-                .. " ".. EscapePath(currentFilename) .."\",\n", command))
-            end
-        else
-            local fbegin, fend = line:find("\"file\": ")
-            if fbegin then
-                currentFilename = line:sub(fend+1, -2)
-                logWithVerbosity(kLogLevel_Verbose, "currentfile: " .. currentFilename)
-            end
-            table.insert(contentLines, line .. "\n")
-        end
-        ::continue::
+    if not result or not result.success then
+        PrintAndLogError("CLI gen command failed: " .. (err or (result and result.message) or "unknown error"))
+        Commands.EndTask("gencmd")
+        DeleteAutocmd(Commands.gencmdAutocmdid)
+        return
     end
 
+    PrintAndLogMessage(string.format("Processed %d files successfully", result.files_processed or 0))
+    if result.errors and #result.errors > 0 then
+        for _, error_msg in ipairs(result.errors) do
+            PrintAndLogMessage("Warning: " .. error_msg)
+        end
+    end
 
-    local file = io.open(CurrentCompileCommandsTargetFilePath, "w")
-    file:write(table.concat(contentLines))
-    file:flush()
-    file:close()
+    CurrentCompileCommandsTargetFilePath = result.output_file or (CurrentGenData.prjDir .. "/compile_commands.json")
+    PrintAndLogMessage("Generated: " .. CurrentCompileCommandsTargetFilePath)
 
     PrintAndLogMessage("finished processing compile_commands.json")
     PrintAndLogMessage("generating header files with Unreal Header Tool...")
