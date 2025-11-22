@@ -494,6 +494,9 @@ function Stage_UbtGenCmd()
     -- Convert to absolute path for CLI (CLI might run from different working directory)
     local abs_project_dir = vim.fn.fnamemodify(CurrentGenData.prjDir, ":p"):gsub("/$", "")
 
+    PrintAndLogMessage("DEBUG: Original prjDir: " .. CurrentGenData.prjDir)
+    PrintAndLogMessage("DEBUG: Absolute prjDir: " .. abs_project_dir)
+
     local cli_args = {
         project = abs_project_dir,
         engine = CurrentGenData.config.EngineDir,
