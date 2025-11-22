@@ -33,6 +33,23 @@ function M.normalize_path(path)
     return normalized
 end
 
+-- Get absolute path
+function M.get_absolute_path(path)
+    if not path then
+        return nil
+    end
+
+    -- If already absolute, return normalized
+    if path:match("^/") or path:match("^%a:") then
+        return M.normalize_path(path)
+    end
+
+    -- Get current directory and combine
+    local pwd = io.popen("pwd"):read("*l")
+    local abs_path = pwd .. "/" .. path
+    return M.normalize_path(abs_path)
+end
+
 -- Check if file exists
 function M.file_exists(path)
     local f = io.open(path, "r")
@@ -507,8 +524,13 @@ function M.generate_commands(opts)
         return result
     end
 
+    -- Ensure absolute paths for UnrealBuildTool
+    project_dir = M.get_absolute_path(project_dir)
+    uproject_path = M.get_absolute_path(uproject_path)
+
     if opts.verbose then
         print("Project: " .. project_name)
+        print("Project Dir: " .. project_dir)
         print("Engine: " .. engine_dir)
         print("Target: " .. target.TargetName .. " " .. target.Configuration)
     end
@@ -517,10 +539,9 @@ function M.generate_commands(opts)
     local ubt_path = M.get_ubt_path(engine_dir, config.EngineVer)
     local editor_flag = target.withEditor and "-editor" or ""
 
-    local ubt_cmd = string.format('"%s" -mode=GenerateClangDatabase -project="%s/%s.uproject" -game -engine %s %s %s %s %s',
+    local ubt_cmd = string.format('"%s" -mode=GenerateClangDatabase -project="%s" -game -engine %s %s %s %s %s',
         ubt_path,
-        project_dir,
-        project_name,
+        uproject_path,
         target.UbtExtraFlags or "",
         editor_flag,
         target.TargetName,
