@@ -313,70 +313,36 @@ function SplitString(str)
 end
 
 function Commands._CreateConfigFile(configFilePath, projectName)
-    local configContents = [[
-{
-    "version" : "0.0.2",
-    "_comment": "dont forget to escape backslashes in EnginePath",
-    "EngineDir": "",
-    "EngineVer": 5.0,
-    "DefaultTarget": 0,
-    "Targets":  [
+    -- Get project directory from config file path
+    local projectDir = configFilePath:match("(.+)/[^/]+$")
 
-        {
-            "TargetName" : "]] .. projectName .. [[",
-            "Configuration" : "DebugGame",
-            "withEditor" : true,
-            "UbtExtraFlags" : "",
-            "PlatformName" : "]] .. platform_name .. [["
-        },
-        {
-            "TargetName" : "]] .. projectName .. [[",
-            "Configuration" : "DebugGame",
-            "withEditor" : false,
-            "UbtExtraFlags" : "",
-            "PlatformName" : "]] .. platform_name .. [["
-        },
-        {
-            "TargetName" : "]] .. projectName .. [[",
-            "Configuration" : "Development",
-            "withEditor" : true,
-            "UbtExtraFlags" : "",
-            "PlatformName" : "]] .. platform_name .. [["
-        },
-        {
-            "TargetName" : "]] .. projectName .. [[",
-            "Configuration" : "Development",
-            "withEditor" : false,
-            "UbtExtraFlags" : "",
-            "PlatformName" : "]] .. platform_name .. [["
-        },
-        {
-            "TargetName" : "]] .. projectName .. [[",
-            "Configuration" : "Shipping",
-            "withEditor" : true,
-            "UbtExtraFlags" : "",
-            "PlatformName" : "]] .. platform_name .. [["
-        },
-        {
-            "TargetName" : "]] .. projectName .. [[",
-            "Configuration" : "Shipping",
-            "withEditor" : false,
-            "UbtExtraFlags" : "",
-            "PlatformName" : "]] .. platform_name .. [["
-        }
-    ]
-}
-    ]]
-    -- local file = io.open(configFilePath, "w")
-    -- file:write(configContents)
-    -- file:close()
-    PrintAndLogMessage("Please populate the configuration for the Unreal project, especially EnginePath, the path to the Unreal Engine")
-    -- local buf = vim.api.nvim_create_buf(false, true)
+    -- Call CLI to create config with auto-detection
+    local result = CallCLI("init", { project = projectDir })
+
+    if not result or not result.success then
+        local error_msg = result and result.message or "Failed to create config"
+        PrintAndLogError("CLI init failed: " .. error_msg)
+
+        -- If auto-detection failed, inform the user
+        if error_msg:match("auto%-detect") then
+            PrintAndLogMessage("Could not auto-detect engine. Please run with --engine manually or check your .uproject file.")
+        end
+        return
+    end
+
+    -- Log success and auto-detection info
+    if result.auto_detected then
+        PrintAndLogMessage("Config created with auto-detected engine:")
+        PrintAndLogMessage("  Engine: " .. (result.detected_engine or "unknown"))
+        PrintAndLogMessage("  Version: " .. (result.detected_version or "unknown"))
+    else
+        PrintAndLogMessage("Config created successfully")
+    end
+
+    -- Open the config file for viewing/editing
     vim.cmd('new ' .. configFilePath)
     vim.cmd('setlocal buftype=')
-    -- vim.api.nvim_buf_set_name(0, configFilePath)
-    vim.api.nvim_buf_set_lines(0, 0, -1, false, SplitString(configContents))
-    -- vim.api.nvim_open_win(buf, true, {relative="win", height=20, width=80, row=1, col=0})
+    vim.cmd('edit')
 end
 
 function Commands._EnsureConfigFile(projectRootDir, projectName)
@@ -739,11 +705,20 @@ function Commands.BuildCoroutine()
             callback = BuildComplete
         })
 
-    local cmd = CurrentGenData.ueBuildBat .. " " .. CurrentGenData.target.TargetName ..
-        CurrentGenData.targetNameSuffix .. " " ..
-        CurrentGenData.target.PlatformName  .. " " ..
-        CurrentGenData.target.Configuration .. " " ..
-        CurrentGenData.projectPath .. " -waitmutex"
+    -- Call CLI to get build command (dry-run mode)
+    local result = CallCLI("build", {
+        project = CurrentGenData.prjDir,
+        target = CurrentGenData.config.DefaultTarget,
+        ["dry-run"] = true
+    })
+
+    if not result or not result.success or not result.command then
+        PrintAndLogError("Failed to construct build command: " .. (result and result.message or "unknown error"))
+        BuildComplete()
+        return
+    end
+
+    local cmd = result.command
 
     vim.cmd("compiler msvc")
     vim.cmd("Dispatch " .. cmd)
@@ -775,40 +750,21 @@ function Commands.run(opts)
 
     Commands.ScheduleTask("run")
 
-    local cmd = ""
+    -- Call CLI to get run command (dry-run mode)
+    local result = CallCLI("run", {
+        project = CurrentGenData.prjDir,
+        target = CurrentGenData.config.DefaultTarget,
+        ["dry-run"] = true
+    })
 
-    if CurrentGenData.target.withEditor then
-        local editorSuffix = ""
-        if CurrentGenData.target.Configuration ~= "Development" then
-            editorSuffix = "-" .. CurrentGenData.target.PlatformName .. "-" ..
-            CurrentGenData.target.Configuration
-        end
-
-        local executablePath = GetEditorPath(
-            CurrentGenData.config.EngineDir,
-            nil,  -- Use engine editor, not project-specific
-            nil,
-            editorSuffix
-        )
-
-        cmd = executablePath .. " " ..
-        CurrentGenData.projectPath .. " -skipcompile"
-    else
-        local exeSuffix = ""
-        if CurrentGenData.target.Configuration ~= "Development" then
-            exeSuffix = "-" .. CurrentGenData.target.PlatformName .. "-" ..
-            CurrentGenData.target.Configuration
-        end
-
-        local executablePath = GetEditorPath(
-            CurrentGenData.config.EngineDir,
-            CurrentGenData.prjDir,
-            CurrentGenData.prjName,
-            exeSuffix
-        )
-
-        cmd = executablePath
+    if not result or not result.success or not result.command then
+        PrintAndLogError("Failed to construct run command: " .. (result and result.message or "unknown error"))
+        Commands.EndTask("run")
+        Commands.EndTask("final")
+        return
     end
+
+    local cmd = result.command
 
     PrintAndLogMessage(cmd)
     vim.cmd("compiler msvc")

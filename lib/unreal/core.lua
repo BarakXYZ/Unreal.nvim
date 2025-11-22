@@ -706,18 +706,234 @@ end
 
 -- Build project
 function M.build_project(opts)
-    return {
+    local result = {
         success = false,
-        message = "Build command not yet implemented in standalone CLI"
+        message = "",
     }
+
+    -- Validate inputs
+    if not opts.project then
+        result.message = "Project path is required"
+        return result
+    end
+
+    -- Find .uproject file
+    local uproject_path = opts.project
+    if not uproject_path:match("%.uproject$") then
+        uproject_path = M.find_uproject(opts.project)
+        if not uproject_path then
+            result.message = "Could not find .uproject file in: " .. opts.project
+            return result
+        end
+    end
+
+    local project_dir = uproject_path:match("(.+)/[^/]+%.uproject$")
+    local project_name = uproject_path:match("/([^/]+)%.uproject$")
+
+    -- Load config
+    local config, err = M.load_config(project_dir)
+    if not config then
+        result.message = err or "Failed to load config"
+        return result
+    end
+
+    -- Get engine dir (with auto-detection fallback)
+    local engine_dir = opts.engine or config.EngineDir
+    if not engine_dir or engine_dir == "" then
+        local detected_path, _, detect_err = M.detect_engine_info(uproject_path)
+        if detected_path then
+            engine_dir = detected_path
+        else
+            result.message = "Engine directory not specified: " .. (detect_err or "unknown error")
+            return result
+        end
+    end
+
+    -- Get target
+    local target_idx = opts.target or config.DefaultTarget or 1
+    local target = config.Targets[target_idx]
+    if not target then
+        result.message = "Invalid target index: " .. tostring(target_idx)
+        return result
+    end
+
+    if opts.verbose then
+        print("Building " .. project_name)
+        print("Target: " .. target.TargetName .. " " .. target.Configuration)
+        print("Platform: " .. target.PlatformName)
+    end
+
+    -- Construct build command
+    local build_script = M.get_build_script_path(engine_dir)
+    local target_suffix = target.withEditor and "Editor" or ""
+    local project_path = project_dir .. "/" .. project_name .. ".uproject"
+
+    local build_cmd = string.format('"%s" %s%s %s %s "%s" -waitmutex',
+        build_script,
+        target.TargetName,
+        target_suffix,
+        target.PlatformName,
+        target.Configuration,
+        project_path
+    )
+
+    result.command = build_cmd
+    result.target = target.TargetName .. target_suffix
+    result.configuration = target.Configuration
+    result.platform = target.PlatformName
+
+    -- If dry-run, just return the command without executing
+    if opts.dry_run then
+        result.success = true
+        result.message = "Build command constructed (dry-run)"
+        return result
+    end
+
+    if opts.verbose then
+        print("Executing: " .. build_cmd)
+    end
+
+    -- Execute build
+    local exit_code = os.execute(build_cmd)
+
+    if exit_code == 0 or exit_code == true then
+        result.success = true
+        result.message = "Build completed successfully"
+    else
+        result.message = "Build failed with exit code: " .. tostring(exit_code)
+    end
+
+    return result
 end
 
 -- Run project
 function M.run_project(opts)
-    return {
+    local result = {
         success = false,
-        message = "Run command not yet implemented in standalone CLI"
+        message = "",
     }
+
+    -- Validate inputs
+    if not opts.project then
+        result.message = "Project path is required"
+        return result
+    end
+
+    -- Find .uproject file
+    local uproject_path = opts.project
+    if not uproject_path:match("%.uproject$") then
+        uproject_path = M.find_uproject(opts.project)
+        if not uproject_path then
+            result.message = "Could not find .uproject file in: " .. opts.project
+            return result
+        end
+    end
+
+    local project_dir = uproject_path:match("(.+)/[^/]+%.uproject$")
+    local project_name = uproject_path:match("/([^/]+)%.uproject$")
+
+    -- Load config
+    local config, err = M.load_config(project_dir)
+    if not config then
+        result.message = err or "Failed to load config"
+        return result
+    end
+
+    -- Get engine dir (with auto-detection fallback)
+    local engine_dir = opts.engine or config.EngineDir
+    if not engine_dir or engine_dir == "" then
+        local detected_path, _, detect_err = M.detect_engine_info(uproject_path)
+        if detected_path then
+            engine_dir = detected_path
+        else
+            result.message = "Engine directory not specified: " .. (detect_err or "unknown error")
+            return result
+        end
+    end
+
+    -- Get target
+    local target_idx = opts.target or config.DefaultTarget or 1
+    local target = config.Targets[target_idx]
+    if not target then
+        result.message = "Invalid target index: " .. tostring(target_idx)
+        return result
+    end
+
+    if opts.verbose then
+        print("Running " .. project_name)
+        print("Target: " .. target.TargetName .. " " .. target.Configuration)
+    end
+
+    -- Construct executable path
+    local editor_path
+    local project_path = project_dir .. "/" .. project_name .. ".uproject"
+    local run_cmd
+
+    if target.withEditor then
+        -- Running with editor
+        local editor_suffix = ""
+        if target.Configuration ~= "Development" then
+            editor_suffix = "-" .. target.PlatformName .. "-" .. target.Configuration
+        end
+
+        if M.is_windows then
+            editor_path = engine_dir .. "/Engine/Binaries/Win64/UnrealEditor" .. editor_suffix .. ".exe"
+        elseif M.is_macos then
+            editor_path = engine_dir .. "/Engine/Binaries/Mac/UnrealEditor" .. editor_suffix .. ".app/Contents/MacOS/UnrealEditor" .. editor_suffix
+        else
+            editor_path = engine_dir .. "/Engine/Binaries/Linux/UnrealEditor" .. editor_suffix
+        end
+
+        run_cmd = string.format('"%s" "%s" -skipcompile', editor_path, project_path)
+    else
+        -- Running standalone game
+        local exe_suffix = ""
+        if target.Configuration ~= "Development" then
+            exe_suffix = "-" .. target.PlatformName .. "-" .. target.Configuration
+        end
+
+        if M.is_windows then
+            editor_path = project_dir .. "/Binaries/Win64/" .. project_name .. exe_suffix .. ".exe"
+        elseif M.is_macos then
+            editor_path = project_dir .. "/Binaries/Mac/" .. project_name .. exe_suffix .. ".app/Contents/MacOS/" .. project_name .. exe_suffix
+        else
+            editor_path = project_dir .. "/Binaries/Linux/" .. project_name .. exe_suffix
+        end
+
+        run_cmd = string.format('"%s"', editor_path)
+    end
+
+    result.command = run_cmd
+    result.target = target.TargetName
+    result.configuration = target.Configuration
+    result.with_editor = target.withEditor
+
+    -- If dry-run, just return the command without executing
+    if opts.dry_run then
+        result.success = true
+        result.message = "Run command constructed (dry-run)"
+        return result
+    end
+
+    if opts.verbose then
+        print("Executing: " .. run_cmd)
+    end
+
+    -- Execute command
+    local exit_code = os.execute(run_cmd)
+
+    if exit_code == 0 or exit_code == true then
+        result.success = true
+        if target.withEditor then
+            result.message = "Editor started successfully"
+        else
+            result.message = "Game started successfully"
+        end
+    else
+        result.message = "Failed to start with exit code: " .. tostring(exit_code)
+    end
+
+    return result
 end
 
 return M
