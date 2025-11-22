@@ -588,7 +588,8 @@ function Stage_UbtGenCmd()
             end
 
             -- Extract compiler command (with or without .exe extension)
-            local compiler_pattern = is_windows and ":.+%.exe\\\"" or ":.+clang[^\\\"]*\\\""
+            -- On Unix, stop before the @ symbol to avoid including arguments
+            local compiler_pattern = is_windows and ":.+%.exe\\\"" or ":.+clang%+%+\\\""
             local startCmd, endCmd = line:find(compiler_pattern)
             local command = line:sub(startCmd + 1, endCmd)
 
@@ -599,8 +600,18 @@ function Stage_UbtGenCmd()
                 local rsppath = line:sub(j+1, endpos-2)
                 if rsppath and file_exists(rsppath) then
                     -- Use platform-specific rsp extension
-                    local rsp_extension = is_windows and ".cl.rsp" or ".rsp"
-                    local newrsppath = rsppath .. rsp_extension
+                    -- On Unix, rsp files already have .rsp extension, on Windows add .cl.rsp
+                    local newrsppath
+                    if is_windows then
+                        newrsppath = rsppath .. ".cl.rsp"
+                    else
+                        -- On Unix, check if already ends with .rsp
+                        if rsppath:match("%.rsp$") then
+                            newrsppath = rsppath .. ".clang.rsp"
+                        else
+                            newrsppath = rsppath .. ".rsp"
+                        end
+                    end
 
                     -- rewrite rsp contents
                     if not shouldSkipFile then
@@ -617,7 +628,7 @@ function Stage_UbtGenCmd()
                 -- it's not an rsp command, the flags will be clang compatible
                 -- for some reason they're only incompatible flags inside
                 -- rsps. keep line as is
-                local exe_pattern = is_windows and "%.exe\\\"" or "clang[^\\\"]*\\\""
+                local exe_pattern = is_windows and "%.exe\\\"" or "clang%+%+\\\""
                 local _, endArgsPos = line:find(exe_pattern)
                 local args = line:sub(endArgsPos+1, -1)
                 local rspfilename = currentFilename:gsub("\\\\","/")
