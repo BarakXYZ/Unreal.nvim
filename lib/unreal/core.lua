@@ -209,17 +209,38 @@ function M.process_compile_commands(input_json, output_dir, engine_dir, skip_eng
             end
 
             -- Extract compiler command (with or without .exe extension)
-            local compiler_pattern = M.is_windows and ":.+%.exe\\\"" or ":.+clang%+%+\\\""
+            local compiler_pattern = M.is_windows and ":.+%.exe\\\"" or ":.+clang%+%+"
+            if verbose and not shouldSkipFile then
+                print("  Pattern: " .. compiler_pattern)
+                print("  Line: " .. line:sub(1, 150))
+            end
             local startCmd, endCmd = line:find(compiler_pattern)
+            if verbose and not shouldSkipFile then
+                print("  Pattern match: startCmd=" .. tostring(startCmd) .. ", endCmd=" .. tostring(endCmd))
+            end
 
             if startCmd and endCmd then
                 local command = line:sub(startCmd + 1, endCmd)
+                local commandAdded = false
+
+                if verbose then
+                    print("  Command line: " .. line)
+                end
 
                 -- Check for @ rsp reference
                 i,j = line:find("%@\\\"")
+                if verbose then
+                    print("  Looking for @ pattern, result: i=" .. tostring(i) .. ", j=" .. tostring(j))
+                end
                 if i then
                     local _,endpos = line:find("\\\"", j)
                     local rsppath = line:sub(j+1, endpos-2)
+
+                    if verbose then
+                        print("  Found RSP reference: " .. rsppath)
+                        print("  File exists: " .. tostring(M.file_exists(rsppath)))
+                        print("  Should skip: " .. tostring(shouldSkipFile))
+                    end
 
                     if rsppath and M.file_exists(rsppath) then
                         -- Use platform-specific rsp extension
@@ -234,24 +255,50 @@ function M.process_compile_commands(input_json, output_dir, engine_dir, skip_eng
                             end
                         end
 
+                        if verbose then
+                            print("  New RSP path: " .. newrsppath)
+                        end
+
                         -- Process RSP file
                         if not shouldSkipFile then
+                            if verbose then
+                                print("  Processing RSP file...")
+                            end
                             local rspcontent, err = M.extract_rsp(rsppath, engine_dir)
                             if rspcontent then
+                                if verbose then
+                                    print("  RSP content extracted, length: " .. #rspcontent)
+                                end
                                 local rspfile = io.open(newrsppath, "w")
                                 if rspfile then
                                     rspfile:write(rspcontent)
                                     rspfile:close()
                                     files_processed = files_processed + 1
+                                    if verbose then
+                                        print("  RSP file written successfully!")
+                                    end
                                 else
-                                    table.insert(errors, "Cannot write RSP: " .. newrsppath)
+                                    local msg = "Cannot write RSP: " .. newrsppath
+                                    if verbose then
+                                        print("  ERROR: " .. msg)
+                                    end
+                                    table.insert(errors, msg)
                                 end
                             else
-                                table.insert(errors, "RSP extract failed: " .. (err or "unknown"))
+                                local msg = "RSP extract failed: " .. (err or "unknown")
+                                if verbose then
+                                    print("  ERROR: " .. msg)
+                                end
+                                table.insert(errors, msg)
+                            end
+                        else
+                            if verbose then
+                                print("  Skipping RSP processing (engine file)")
                             end
                         end
 
                         table.insert(contentLines, string.format("\t\t\"command\": %s @\\\"" ..newrsppath .."\\\"\",\n", command))
+                        commandAdded = true
                     end
                 else
                     -- No RSP, create one
@@ -290,8 +337,17 @@ function M.process_compile_commands(input_json, output_dir, engine_dir, skip_eng
 
                         table.insert(contentLines, string.format("\t\t\"command\": %s @\\\"" .. M.escape_path(rspfilepath) .."\\\""
                             .. " ".. M.escape_path(currentFilename) .."\",\n", command))
+                        commandAdded = true
                     end
                 end
+
+                -- If we couldn't process the command, add original line
+                if not commandAdded then
+                    table.insert(contentLines, line .. "\n")
+                end
+            else
+                -- No valid compiler pattern found, keep original
+                table.insert(contentLines, line .. "\n")
             end
         else
             local fbegin, fend = line:find("\"file\": ")
