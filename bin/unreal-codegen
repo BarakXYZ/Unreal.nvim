@@ -75,6 +75,7 @@ USAGE:
     unreal-codegen <COMMAND> [OPTIONS]
 
 COMMANDS:
+    init        Initialize project with UnrealNvim.json config
     gen         Generate compile_commands.json for LSP support
     build       Build the Unreal project
     run         Run the Unreal project
@@ -89,11 +90,14 @@ OPTIONS:
     --verbose                Enable verbose output
 
 EXAMPLES:
+    # Initialize a new project
+    unreal-codegen init -p ~/MyProject -e ~/UE_5.7
+
     # Generate compile commands for project only
-    unreal-codegen gen -p ~/MyProject -e ~/UE_5.7
+    unreal-codegen gen -p ~/MyProject
 
     # Generate with engine sources
-    unreal-codegen gen -p ~/MyProject -e ~/UE_5.7 --with-engine
+    unreal-codegen gen -p ~/MyProject --with-engine
 
     # Build project with specific target
     unreal-codegen build -p ~/MyProject -t 0
@@ -125,7 +129,15 @@ local function main(args)
 
     -- Execute command
     local success, result = pcall(function()
-        if opts.command == "gen" then
+        if opts.command == "init" then
+            if not opts.project then
+                error("--project is required")
+            end
+            if not opts.engine then
+                error("--engine is required")
+            end
+            return core.init_project(opts)
+        elseif opts.command == "gen" then
             if not opts.project then
                 error("--project is required")
             end

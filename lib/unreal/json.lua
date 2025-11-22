@@ -45,21 +45,102 @@ function M.encode(obj)
     end
 end
 
+-- Simple JSON decoder using pattern matching
 function M.decode(str)
-    -- Try loading with loadstring (Lua 5.1) or load (Lua 5.2+)
-    local loadfn = loadstring or load
+    -- Remove whitespace and newlines for easier parsing
+    str = str:gsub("%s+", " ")
+    str = str:gsub("^ ", "")
+    str = str:gsub(" $", "")
 
-    -- Convert JSON to Lua table notation
-    str = str:gsub("null", "nil")
-    str = str:gsub("true", "true")
-    str = str:gsub("false", "false")
+    -- Simple recursive descent parser
+    local function parse_value(s, pos)
+        -- Skip whitespace
+        while s:sub(pos, pos):match("%s") do
+            pos = pos + 1
+        end
 
-    local fn, err = loadfn("return " .. str)
-    if not fn then
-        error("JSON decode error: " .. tostring(err))
+        local char = s:sub(pos, pos)
+
+        -- Parse string
+        if char == '"' then
+            local endpos = pos + 1
+            while s:sub(endpos, endpos) ~= '"' or s:sub(endpos-1, endpos-1) == '\\' do
+                endpos = endpos + 1
+            end
+            return s:sub(pos+1, endpos-1), endpos + 1
+        end
+
+        -- Parse number
+        if char:match("[%-0-9]") then
+            local endpos = pos
+            while s:sub(endpos, endpos):match("[0-9%.]") do
+                endpos = endpos + 1
+            end
+            return tonumber(s:sub(pos, endpos-1)), endpos
+        end
+
+        -- Parse true/false/null
+        if s:sub(pos, pos+3) == "true" then
+            return true, pos + 4
+        end
+        if s:sub(pos, pos+4) == "false" then
+            return false, pos + 5
+        end
+        if s:sub(pos, pos+3) == "null" then
+            return nil, pos + 4
+        end
+
+        -- Parse object
+        if char == '{' then
+            local obj = {}
+            pos = pos + 1
+            while s:sub(pos, pos) ~= '}' do
+                -- Skip whitespace and commas
+                while s:sub(pos, pos):match("[%s,]") do
+                    pos = pos + 1
+                end
+                if s:sub(pos, pos) == '}' then break end
+
+                -- Parse key
+                local key, newpos = parse_value(s, pos)
+                pos = newpos
+
+                -- Skip colon
+                while s:sub(pos, pos):match("[%s:]") do
+                    pos = pos + 1
+                end
+
+                -- Parse value
+                local value
+                value, pos = parse_value(s, pos)
+                obj[key] = value
+            end
+            return obj, pos + 1
+        end
+
+        -- Parse array
+        if char == '[' then
+            local arr = {}
+            pos = pos + 1
+            while s:sub(pos, pos) ~= ']' do
+                -- Skip whitespace and commas
+                while s:sub(pos, pos):match("[%s,]") do
+                    pos = pos + 1
+                end
+                if s:sub(pos, pos) == ']' then break end
+
+                local value
+                value, pos = parse_value(s, pos)
+                table.insert(arr, value)
+            end
+            return arr, pos + 1
+        end
+
+        error("Unexpected character at position " .. pos .. ": " .. char)
     end
 
-    return fn()
+    local result, _ = parse_value(str, 1)
+    return result
 end
 
 return M
