@@ -491,8 +491,11 @@ function Stage_UbtGenCmd()
     PrintAndLogMessage("Processing compile_commands.json with CLI...")
 
     -- Call the CLI to process compile_commands.json
+    -- Convert to absolute path for CLI (CLI might run from different working directory)
+    local abs_project_dir = vim.fn.fnamemodify(CurrentGenData.prjDir, ":p"):gsub("/$", "")
+
     local cli_args = {
-        project = CurrentGenData.prjDir,
+        project = abs_project_dir,
         engine = CurrentGenData.config.EngineDir,
         target = CurrentGenData.config.DefaultTarget or 1,
     }
@@ -706,8 +709,9 @@ function Commands.BuildCoroutine()
         })
 
     -- Call CLI to get build command (dry-run mode)
+    local abs_project_dir = vim.fn.fnamemodify(CurrentGenData.prjDir, ":p"):gsub("/$", "")
     local result = CallCLI("build", {
-        project = CurrentGenData.prjDir,
+        project = abs_project_dir,
         target = CurrentGenData.config.DefaultTarget,
         ["dry-run"] = true
     })
@@ -751,8 +755,9 @@ function Commands.run(opts)
     Commands.ScheduleTask("run")
 
     -- Call CLI to get run command (dry-run mode)
+    local abs_project_dir = vim.fn.fnamemodify(CurrentGenData.prjDir, ":p"):gsub("/$", "")
     local result = CallCLI("run", {
-        project = CurrentGenData.prjDir,
+        project = abs_project_dir,
         target = CurrentGenData.config.DefaultTarget,
         ["dry-run"] = true
     })
